@@ -10,7 +10,8 @@ pub fn run(alloc: std.mem.Allocator) !void {
     var write_buf: [1024]u8 = undefined;
     var writer = std.fs.File.stdout().writer(&write_buf);
     const w = &writer.interface;
-    if (args.files.items.len > 0) {
+
+    if (multiple) {
         for (args.files.items) |path| {
             var file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
             defer file.close();
