@@ -41,6 +41,8 @@ const ArgErrors = error{
 
 fn parseArgs(alloc: std.mem.Allocator) !Args {
     var iter = try std.process.argsWithAllocator(alloc);
+    defer iter.deinit();
+
     _ = iter.skip();
 
     var fields: std.ArrayList(u8) = .empty;

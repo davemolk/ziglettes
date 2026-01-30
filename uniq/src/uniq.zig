@@ -102,23 +102,23 @@ fn processFile(alloc: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io
         if (previous) |prev| alloc.free(prev);
     }
 
-    while (reader.takeDelimiterInclusive('\n')) |line| {
-        const trimmed = std.mem.trimRight(u8, line, "\n");
+    while (true) {
+        const line = reader.takeDelimiterExclusive('\n') catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
 
-        if (previous) |prev| {
-            if (std.mem.eql(u8, prev, trimmed)) {
-                seen_prev_count += 1;
-                continue;
-            }
-
-            try display(writer, opts, prev, seen_prev_count);
-            alloc.free(prev);
+        const buffered = reader.buffered();
+        if (buffered.len > 0 and buffered[0] == '\n') {
+            _ = reader.toss(1);
         }
 
-        previous = try alloc.dupe(u8, trimmed);
-        seen_prev_count = 1;
-    } else |err| {
-        if (err != error.EndOfStream) return err;
+        try processLine(alloc, writer, opts, &previous, &seen_prev_count, line);
+    }
+
+    const remainder = reader.buffered();
+    if (remainder.len > 0) {
+        try processLine(alloc, writer, opts, &previous, &seen_prev_count, remainder);
     }
 
     if (previous) |prev| {
@@ -126,6 +126,21 @@ fn processFile(alloc: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io
     }
 
     try writer.flush();
+}
+
+fn processLine(alloc: std.mem.Allocator, writer: *std.Io.Writer, opts: processOptions, previous: *?[]u8, count: *usize, raw: []const u8) !void {
+    if (previous.*) |prev| {
+        if (std.mem.eql(u8, prev, raw)) {
+            count.* += 1;
+            return;
+        }
+
+        try display(writer, opts, prev, count.*);
+        alloc.free(prev);
+    }
+
+    previous.* = try alloc.dupe(u8, raw);
+    count.* = 1;
 }
 
 fn display(writer: *std.Io.Writer, opts: processOptions, prev: []u8, count: usize) !void {
@@ -141,4 +156,154 @@ fn display(writer: *std.Io.Writer, opts: processOptions, prev: []u8, count: usiz
     } else {
         try writer.print("{s}\n", .{prev});
     }
+}
+
+test "file with newline ending" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("line1\nline2\nline2\nline3\nline4\n");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, .{
+        .display_count = false,
+        .only_repeats = false,
+        .only_uniques = false,
+    });
+
+    try std.testing.expectEqualStrings("line1\nline2\nline3\nline4\n", w.buffered());
+}
+
+test "file without newline ending" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("line1\nline2\nline2\nline3\nline4\nline4");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, .{
+        .display_count = false,
+        .only_repeats = false,
+        .only_uniques = false,
+    });
+
+    try std.testing.expectEqualStrings("line1\nline2\nline3\nline4\n", w.buffered());
+}
+
+test "display count" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("line1\nline2\nline2\nline3\nline4\nline4\n");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, .{
+        .display_count = true,
+        .only_repeats = false,
+        .only_uniques = false,
+    });
+
+    try std.testing.expectEqualStrings("1 line1\n2 line2\n1 line3\n2 line4\n", w.buffered());
+}
+
+test "display count w/out newline" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("line1\nline2\nline2\nline3\nline4\nline4");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, .{
+        .display_count = true,
+        .only_repeats = false,
+        .only_uniques = false,
+    });
+
+    try std.testing.expectEqualStrings("1 line1\n2 line2\n1 line3\n2 line4\n", w.buffered());
+}
+
+test "only repeated" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("line1\nline2\nline2\nline3\nline4\nline4\n");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, .{
+        .display_count = false,
+        .only_repeats = true,
+        .only_uniques = false,
+    });
+
+    try std.testing.expectEqualStrings("line2\nline4\n", w.buffered());
+}
+
+test "only repeated without newline" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("line1\nline2\nline2\nline3\nline4\nline4");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, .{
+        .display_count = false,
+        .only_repeats = true,
+        .only_uniques = false,
+    });
+
+    try std.testing.expectEqualStrings("line2\nline4\n", w.buffered());
+}
+
+test "uniques" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("line1\nline2\nline2\nline3\nline4\nline4\n");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, .{
+        .display_count = false,
+        .only_repeats = false,
+        .only_uniques = true,
+    });
+
+    try std.testing.expectEqualStrings("line1\nline3\n", w.buffered());
+}
+
+test "uniques without newline" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("line1\nline2\nline2\nline3\nline4\nline4");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, .{
+        .display_count = false,
+        .only_repeats = false,
+        .only_uniques = true,
+    });
+
+    try std.testing.expectEqualStrings("line1\nline3\n", w.buffered());
+}
+
+test "duplicates with count" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("line1\nline2\nline2\nline3\nline4\nline4\n");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, .{
+        .display_count = true,
+        .only_repeats = true,
+        .only_uniques = false,
+    });
+
+    try std.testing.expectEqualStrings("2 line2\n2 line4\n", w.buffered());
+}
+
+test "duplicates with count, no newline" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("line1\nline2\nline2\nline3\nline4\nline4");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, .{
+        .display_count = true,
+        .only_repeats = true,
+        .only_uniques = false,
+    });
+
+    try std.testing.expectEqualStrings("2 line2\n2 line4\n", w.buffered());
 }

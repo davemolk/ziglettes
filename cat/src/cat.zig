@@ -18,7 +18,7 @@ pub fn run(alloc: std.mem.Allocator) !void {
             var f_reader = file.reader(&buf);
             const reader = &f_reader.interface;
 
-            try processFile(alloc, reader, w, args.line_numbers);
+            try processFile(alloc, reader, w, args.line_numbers, args.exclude_blanks);
         }
     } else {
         var file = std.fs.File.stdin();
@@ -27,12 +27,13 @@ pub fn run(alloc: std.mem.Allocator) !void {
         var f_reader = file.reader(&buf);
         const reader = &f_reader.interface;
 
-        try processFile(alloc, reader, w, args.line_numbers);
+        try processFile(alloc, reader, w, args.line_numbers, args.exclude_blanks);
     }
 }
 
 const Args = struct {
     line_numbers: bool,
+    exclude_blanks: bool,
     paths: std.ArrayList([]const u8),
 
     pub fn deinit(self: *Args, alloc: std.mem.Allocator) void {
@@ -52,11 +53,15 @@ fn parseArgs(alloc: std.mem.Allocator) !Args {
 
     var args: Args = .{
         .line_numbers = false,
+        .exclude_blanks = false,
         .paths = ArrayList([]const u8).empty,
     };
 
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "-n")) {
+            args.line_numbers = true;
+        } else if (std.mem.eql(u8, arg, "-b")) {
+            args.exclude_blanks = true;
             args.line_numbers = true;
         } else if (std.mem.eql(u8, arg, "-")) {
             return args;
@@ -69,7 +74,7 @@ fn parseArgs(alloc: std.mem.Allocator) !Args {
     return args;
 }
 
-fn processFile(alloc: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io.Writer, line_numbers: bool) !void {
+fn processFile(alloc: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io.Writer, line_numbers: bool, exclude_blanks: bool) !void {
     var line = std.Io.Writer.Allocating.init(alloc);
     defer line.deinit();
 
@@ -82,7 +87,12 @@ fn processFile(alloc: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io
         _ = reader.toss(1);
 
         if (line_numbers) {
-            try writer.print("{d}  {s}\n", .{ i, line.written() });
+            if (exclude_blanks and line.written().len == 0) {
+                i -= 1;
+                try writer.writeByte('\n');
+            } else {
+                try writer.print("{d}  {s}\n", .{ i, line.written() });
+            }
         } else {
             try writer.print("{s}\n", .{line.written()});
         }
@@ -98,4 +108,54 @@ fn processFile(alloc: std.mem.Allocator, reader: *std.Io.Reader, writer: *std.Io
         }
     }
     try writer.flush();
+}
+
+test "file ending with new line" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("foo\nbar\nbaz\n");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, false, false);
+    try std.testing.expectEqualStrings("foo\nbar\nbaz\n", w.buffered());
+}
+
+test "file not ending with new line" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("foo\nbar\nbaz");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, false, false);
+    try std.testing.expectEqualStrings("foo\nbar\nbaz\n", w.buffered());
+}
+
+test "number lines" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("foo\nbar\nbaz");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, true, false);
+    try std.testing.expectEqualStrings("1  foo\n2  bar\n3  baz\n", w.buffered());
+}
+
+test "number lines with blanks" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("foo\n\nbar\n\nbaz");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, true, false);
+    try std.testing.expectEqualStrings("1  foo\n2  \n3  bar\n4  \n5  baz\n", w.buffered());
+}
+
+test "exclude blanks" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("foo\n\nbar\n\nbaz");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    try processFile(alloc, &reader, &w, true, true);
+    try std.testing.expectEqualStrings("1  foo\n\n2  bar\n\n3  baz\n", w.buffered());
 }
