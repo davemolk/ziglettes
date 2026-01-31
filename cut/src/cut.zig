@@ -124,11 +124,13 @@ fn processLine(writer: *std.Io.Writer, data: []const u8, fields: std.ArrayList(u
 
     const multiple = fields.items.len > 1;
     while (iter.next()) |chunk| {
+        var fields_remaining = fields.items.len;
         for (fields.items) |field| {
+            fields_remaining -= 1;
             if (i == field) {
                 try writer.writeAll(chunk);
 
-                if (multiple) {
+                if (multiple and fields_remaining > 0) {
                     try writer.writeByte('\t');
                 }
             }
@@ -138,4 +140,133 @@ fn processLine(writer: *std.Io.Writer, data: []const u8, fields: std.ArrayList(u
     }
 
     try writer.writeByte('\n');
+}
+
+test "single field" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("f0\tf1\tf2\tf3\tf4\n0\t1\t2\t3\t4\n5\t6\t7\t8\t9\n");
+
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    var fields = std.ArrayList(u8).empty;
+    defer fields.deinit(alloc);
+
+    try fields.append(alloc, 2);
+    const delim: u8 = '\t';
+
+    try processFile(alloc, &reader, &w, fields, delim);
+    try std.testing.expectEqualStrings("f1\n1\n6\n", w.buffered());
+}
+
+test "single field, no newline" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("f0\tf1\tf2\tf3\tf4\n0\t1\t2\t3\t4\n5\t6\t7\t8\t9");
+
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    var fields = std.ArrayList(u8).empty;
+    defer fields.deinit(alloc);
+
+    try fields.append(alloc, 2);
+    const delim: u8 = '\t';
+
+    try processFile(alloc, &reader, &w, fields, delim);
+    try std.testing.expectEqualStrings("f1\n1\n6\n", w.buffered());
+}
+
+test "multiple fields" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("f0\tf1\tf2\tf3\tf4\n0\t1\t2\t3\t4\n5\t6\t7\t8\t9\n");
+
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    var fields = std.ArrayList(u8).empty;
+    defer fields.deinit(alloc);
+
+    try fields.append(alloc, 1);
+    try fields.append(alloc, 2);
+    const delim: u8 = '\t';
+
+    try processFile(alloc, &reader, &w, fields, delim);
+    try std.testing.expectEqualStrings("f0\tf1\n0\t1\n5\t6\n", w.buffered());
+}
+
+test "multiple fields no newline" {
+    const alloc = std.testing.allocator;
+    var reader: std.Io.Reader = .fixed("f0\tf1\tf2\tf3\tf4\n0\t1\t2\t3\t4\n5\t6\t7\t8\t9");
+
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    var fields = std.ArrayList(u8).empty;
+    defer fields.deinit(alloc);
+
+    try fields.append(alloc, 1);
+    try fields.append(alloc, 2);
+    const delim: u8 = '\t';
+
+    try processFile(alloc, &reader, &w, fields, delim);
+    try std.testing.expectEqualStrings("f0\tf1\n0\t1\n5\t6\n", w.buffered());
+}
+
+test "custom delim" {
+    const alloc = std.testing.allocator;
+    const lines =
+        \\"Adore You",Harry Styles,2019,vi−I−IV−V,C minor
+        \\"Africa",Toto,1982,vi−IV–I–V (chorus),F♯ minor (chorus)
+        \\"Aicha",Cheb Khaled,1996,vi–IV–I–V,G minor
+        \\
+    ;
+    var reader: std.Io.Reader = .fixed(lines);
+
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    var fields = std.ArrayList(u8).empty;
+    defer fields.deinit(alloc);
+
+    try fields.append(alloc, 1);
+    const delim: u8 = ',';
+
+    try processFile(alloc, &reader, &w, fields, delim);
+    const expect =
+        \\"Adore You"
+        \\"Africa"
+        \\"Aicha"
+        \\
+    ;
+
+    try std.testing.expectEqualStrings(expect, w.buffered());
+}
+
+test "custom delim no newline" {
+    const alloc = std.testing.allocator;
+    const lines =
+        \\"Adore You",Harry Styles,2019,vi−I−IV−V,C minor
+        \\"Africa",Toto,1982,vi−IV–I–V (chorus),F♯ minor (chorus)
+        \\"Aicha",Cheb Khaled,1996,vi–IV–I–V,G minor
+    ;
+    var reader: std.Io.Reader = .fixed(lines);
+
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    var fields = std.ArrayList(u8).empty;
+    defer fields.deinit(alloc);
+
+    try fields.append(alloc, 1);
+    const delim: u8 = ',';
+
+    try processFile(alloc, &reader, &w, fields, delim);
+    const expect =
+        \\"Adore You"
+        \\"Africa"
+        \\"Aicha"
+        \\
+    ;
+
+    try std.testing.expectEqualStrings(expect, w.buffered());
 }
