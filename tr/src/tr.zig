@@ -60,9 +60,85 @@ fn constructTrMap(src_range: []const u8, dst_range: []const u8, map: []u8, opts:
     }
 }
 
+const ByteRange = struct {
+    start: u8,
+    end: u8,
+};
+
+const CharClass = struct {
+    name: []const u8,
+    ranges: []const ByteRange,
+};
+
+fn findCharClass(name: []const u8) ?[]const ByteRange {
+    var found: ?[]const ByteRange = null;
+    for (char_classes) |class| {
+        if (std.mem.eql(u8, name, class.name)) {
+            found = class.ranges;
+            break;
+        }
+    }
+
+    return found;
+}
+
+const char_classes = [_]CharClass{
+    .{
+        .name = "upper",
+        .ranges = &[_]ByteRange{
+            .{ .start = 'A', .end = 'Z' },
+        },
+    },
+    .{
+        .name = "lower",
+        .ranges = &[_]ByteRange{
+            .{ .start = 'a', .end = 'z' },
+        },
+    },
+    .{
+        .name = "digit",
+        .ranges = &[_]ByteRange{
+            .{ .start = '0', .end = '9' },
+        },
+    },
+    .{
+        .name = "alpha",
+        .ranges = &[_]ByteRange{
+            .{ .start = 'A', .end = 'Z' },
+            .{ .start = 'a', .end = 'z' },
+        },
+    },
+    .{
+        .name = "alnum",
+        .ranges = &[_]ByteRange{
+            .{ .start = 'A', .end = 'Z' },
+            .{ .start = 'a', .end = 'z' },
+            .{ .start = '0', .end = '9' },
+        },
+    },
+};
+
 fn expandRange(spec: []const u8, out: []u8) !usize {
     var out_i: usize = 0;
     var i: usize = 0;
+
+    // handle classes first
+    if (std.mem.startsWith(u8, spec, "[:")) {
+        if (!std.mem.endsWith(u8, spec, ":]")) return error.InvalidClassFormat;
+
+        const name = spec[2 .. spec.len - 2];
+        const ranges = findCharClass(name) orelse return error.UnknownClass;
+
+        for (ranges) |r| {
+            var c = r.start;
+            while (c <= r.end) : (c += 1) {
+                out[out_i] = c;
+                out_i += 1;
+            }
+        }
+
+        return out_i;
+    }
 
     while (i < spec.len) : (i += 1) {
         const c = spec[i];
@@ -351,4 +427,100 @@ test "delete and squeeze multiple" {
     try constructTrMap("ac", "bd", &map, opts);
     try tr(&reader, &w, &map, opts);
     try std.testing.expectEqualStrings("bd\n", w.buffered());
+}
+
+test "classes 1" {
+    var reader: std.Io.Reader = .fixed("aaBBCc\n");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    var map: [256]u8 = undefined;
+    for (map, 0..) |_, i| {
+        map[i] = @intCast(i);
+    }
+
+    var delete_map: [256]bool = .{false} ** 256;
+    var squeeze_map: [256]bool = .{false} ** 256;
+    const opts = Options{
+        .delete = false,
+        .squeeze = false,
+        .delete_map = &delete_map,
+        .squeeze_map = &squeeze_map,
+    };
+
+    try constructTrMap("[:upper:]", "[:lower:]", &map, opts);
+    try tr(&reader, &w, &map, opts);
+    try std.testing.expectEqualStrings("aabbcc\n", w.buffered());
+}
+
+test "classes 2" {
+    var reader: std.Io.Reader = .fixed("aaBBCc\n");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    var map: [256]u8 = undefined;
+    for (map, 0..) |_, i| {
+        map[i] = @intCast(i);
+    }
+
+    var delete_map: [256]bool = .{false} ** 256;
+    var squeeze_map: [256]bool = .{false} ** 256;
+    const opts = Options{
+        .delete = false,
+        .squeeze = false,
+        .delete_map = &delete_map,
+        .squeeze_map = &squeeze_map,
+    };
+
+    try constructTrMap("[:lower:]", "[:upper:]", &map, opts);
+    try tr(&reader, &w, &map, opts);
+    try std.testing.expectEqualStrings("AABBCC\n", w.buffered());
+}
+
+test "delete and class" {
+    var reader: std.Io.Reader = .fixed("a1b2c3d\n");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    var map: [256]u8 = undefined;
+    for (map, 0..) |_, i| {
+        map[i] = @intCast(i);
+    }
+
+    var delete_map: [256]bool = .{false} ** 256;
+    var squeeze_map: [256]bool = .{false} ** 256;
+    const opts = Options{
+        .delete = true,
+        .squeeze = false,
+        .delete_map = &delete_map,
+        .squeeze_map = &squeeze_map,
+    };
+
+    try constructTrMap("[:digit:]", "", &map, opts);
+    try tr(&reader, &w, &map, opts);
+    try std.testing.expectEqualStrings("abcd\n", w.buffered());
+}
+
+test "squeeze and class" {
+    var reader: std.Io.Reader = .fixed("!!a1bb2ccc3d!!\n");
+    var buf: [512]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+
+    var map: [256]u8 = undefined;
+    for (map, 0..) |_, i| {
+        map[i] = @intCast(i);
+    }
+
+    var delete_map: [256]bool = .{false} ** 256;
+    var squeeze_map: [256]bool = .{false} ** 256;
+    const opts = Options{
+        .delete = false,
+        .squeeze = true,
+        .delete_map = &delete_map,
+        .squeeze_map = &squeeze_map,
+    };
+
+    try constructTrMap("[:alpha:]", "", &map, opts);
+    try tr(&reader, &w, &map, opts);
+    try std.testing.expectEqualStrings("!!a1b2c3d!!\n", w.buffered());
 }
